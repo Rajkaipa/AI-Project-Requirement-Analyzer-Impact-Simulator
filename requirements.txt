@@ -1,0 +1,34 @@
+# --- Core Agent Development Kit ---
+google-generativeai
+google-genai
+google-ai-generativelanguage
+google-cloud-aiplatform
+
+# --- ADK Python SDK ---
+google-adk
+
+# --- For MCP 
+mcp
+
+
+# --- For Tools 
+python-dotenv
+pydantic
+requests
+
+# --- For Math Tools ---
+numpy
+scipy
+#---- Visualization Tools ---
+matplotlib
+plotly
+streamlit
+
+# --- Utilities ---
+mermaid-py
+rich
+PyPDF2
+python-docx
+
+# --- For logs, debugging
+loguru

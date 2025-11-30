@@ -15,7 +15,7 @@ COPY requirements.txt ./requirements.txt
 # Install Python deps
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app
+# Now copy the rest of the app
 COPY . .
 
 # Streamlit config to listen on 0.0.0.0

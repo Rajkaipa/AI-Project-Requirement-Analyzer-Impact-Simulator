@@ -2,12 +2,14 @@
 
 import json
 from typing import Any, Dict, List
+from collections import defaultdict
 
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.main_agent import run_full_pipeline
+# Ensure this import path is correct for your project
+from src.main_agent import run_full_pipeline 
 
 
 # -------------------------------------------------------------------
@@ -38,8 +40,10 @@ def _extract_counts_from_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
 def _timeline_points(
     baseline_weeks: float,
     scenario_results: List[Dict[str, Any]],
+    baseline_label: str = "Estimated timeline",
 ) -> Dict[str, List[Any]]:
-    labels = ["Baseline"]
+    """Build bar labels/values for baseline + scenarios."""
+    labels = [baseline_label]
     values = [baseline_weeks]
 
     for s in scenario_results:
@@ -56,109 +60,217 @@ def _timeline_points(
     return {"labels": labels, "values": values}
 
 
+def _recompute_timeline_for_team(
+    baseline_weeks: float,
+    original_team_size: int,
+    new_team_size: int,
+) -> float:
+    """Deterministic what-if timeline recompute based purely on team size ratio."""
+    if new_team_size <= 0 or original_team_size <= 0:
+        return float(baseline_weeks)
+    return round(float(baseline_weeks) * float(original_team_size) / float(new_team_size), 2)
+
+
+def _build_risk_heatmap_matrix(raid_log: List[Dict[str, Any]]):
+    """
+    Build a Likelihood × Impact heat map matrix from the RAID log.
+
+    If 'likelihood'/'impact' are missing for a risk, we heuristically
+    derive them from 'severity':
+      - low      -> likelihood=Low,       impact=Low
+      - medium   -> likelihood=Medium,    impact=Medium
+      - high     -> likelihood=High,      impact=High
+      - critical -> likelihood=Very High, impact=Very High
+
+    Returns:
+        likelihood_labels, impact_labels, matrix, cell_to_risks
+        or (None, None, None, {}) if no data.
+    """
+    likelihood_labels = ["Low", "Medium", "High", "Very High"]
+    impact_labels = ["Low", "Medium", "High", "Very High"]
+    size = len(likelihood_labels)
+
+    matrix = [[0 for _ in range(size)] for _ in range(size)]
+    cell_to_risks: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
+    any_point = False
+
+    def _to_index(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            idx = int(value) - 1
+            if idx < 0:
+                idx = 0
+            if idx >= size:
+                idx = size - 1
+            return idx
+        if isinstance(value, str):
+            t = value.strip().lower()
+            mapping = {
+                "very low": 0,
+                "low": 0,
+                "medium": 1,
+                "moderate": 1,
+                "high": 2,
+                "very high": 3,
+                "critical": 3,
+                "severe": 3,
+            }
+            return mapping.get(t)
+        return None
+
+    for entry in raid_log:
+        for risk in entry.get("risks") or []:
+            like = (
+                risk.get("likelihood")
+                or risk.get("probability")
+                or risk.get("likelihood_level")
+            )
+            imp = (
+                risk.get("impact")
+                or risk.get("impact_level")
+                or risk.get("severity_impact")
+            )
+
+            # Fallback from severity, as we did before
+            sev = str(risk.get("severity", "")).lower()
+            if sev and (not like):
+                like = sev
+            if sev and (not imp):
+                imp = sev
+
+            li = _to_index(like)
+            ii = _to_index(imp)
+            if li is None or ii is None:
+                continue
+
+            if 0 <= li < size and 0 <= ii < size:
+                matrix[li][ii] += 1
+                any_point = True
+                lh_label = likelihood_labels[li]
+                im_label = impact_labels[ii]
+                cell_to_risks[(lh_label, im_label)].append(risk)
+
+    if not any_point:
+        return None, None, None, {}
+
+    return likelihood_labels, impact_labels, matrix, cell_to_risks
+
+
 # -------------------------------------------------------------------
 # Streamlit UI
 # -------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="AI Project Requirement Analyzer & Impact Simulator",
-    layout="wide",
-)
-
-# Session-level store for human-edited requirements
-if "approved_requirements" not in st.session_state:
-    st.session_state["approved_requirements"] = None
-
-# Session-level store for last pipeline result
-if "pipeline_result" not in st.session_state:
-    st.session_state["pipeline_result"] = None
-
 # Global CSS tweaks
 st.markdown(
     """
     <style>
+    
+    /* GLOBAL TYPOGRAPHY & LAYOUT */
 
-    /* ----------------------------------------------------
-       GLOBAL TEXT (1.5× larger)
-       ---------------------------------------------------- */
     html, body, [data-testid="stAppViewContainer"] * {
-        font-size: 1.4rem !important;     /* core text */
+        font-size: 1.1rem !important; 
     }
 
-    /* ----------------------------------------------------
-       METRIC NUMBERS (Team size = 3)
-       ---------------------------------------------------- */
-    div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-        font-size: 2.4rem !important;     /* bigger but not huge */
+    [data-testid="stAppViewContainer"] .block-container {
+        max-width: 90% !important; 
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        padding-top: 1.5rem !important;
+    }
+    
+    h2, h3 {
+        font-size: 2.0rem !important;
         font-weight: 800 !important;
-        line-height: 1.1;
+        color: #1f2937;
+        border-bottom: 2px solid #e5e7eb;
+        padding-bottom: 0.5rem;
+        margin-top: 2rem !important;
+        margin-bottom: 1rem !important;
+    }
+    
+    h4 {
+        font-size: 1.5rem !important;
+        font-weight: 700 !important;
+    }
+    
+    /* METRICS */
+
+    div[data-testid="stMetric"] {
+        border-radius: 0.5rem;
+        padding: 0.5rem;
+        background-color: #f9fafb;
+        min-height: 100px;
     }
 
-    /* ----------------------------------------------------
-       METRIC LABELS (Team size, Baseline timeline)
-       ---------------------------------------------------- */
-    div[data-testid="metric-container"] p,
-    div[data-testid="metric-container"] label {
-        font-size: 1.3rem !important;
+    div[data-testid="stMetricLabel"] {
+        font-size: 3.5rem !important;
+        font-weight: 700 !important;
+        line-height: 1.1 !important;
+        color: #1f2937 !important;
+    }
+
+    div[data-testid="stMetricLabel"] > div > p {
+        font-size: 3.5rem !important; 
+        font-weight: 700 !important;
+    }
+    
+    div[data-testid="stMetricValue"] {
+        font-size: 2.5rem !important;
+        font-weight: 900 !important;
+        line-height: 1.0 !important;
+        color: #4f46e5 !important;
+    }
+
+    /* PLOTLY TITLES */
+
+    .plot-container .plotly .js-plotly-plot .plotly-title {
+        font-size: 1.2rem !important; 
         font-weight: 600 !important;
     }
+    
+    /* TABS */
 
-    /* ----------------------------------------------------
-       TAB LABELS (Executive Summary, Risk Analysis, etc.)
-       ---------------------------------------------------- */
-    button[data-baseweb="tab"] > div {
-        font-size: 1.45rem !important;
-        font-weight: 700 !important;
-        padding-top: 0.4rem !important;
-        padding-bottom: 0.4rem !important;
+    .stTabs [data-baseweb="tab"] {
+        padding: 0.6rem 1.2rem;
+        font-size: 1.2rem !important;
+        font-weight: 700;
     }
-
-    /* ----------------------------------------------------
-       SECTION HEADERS (H1, H2, H3)
-       ---------------------------------------------------- */
-    h1, h2, h3, h4 {
-        font-size: 1.9rem !important;
-        font-weight: 800 !important;
-        margin-top: 0.5rem !important;
-        margin-bottom: 0.5rem !important;
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        color: #4f46e5;
+        border-bottom: 3px solid #4f46e5;
+        background-color: #f0f2f6;
     }
-
-    /* ----------------------------------------------------
-       JSON text & expander content
-       ---------------------------------------------------- */
-    .stJson, .stExpander {
-        font-size: 1.3rem !important;
-    }
-
+    
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-
 # Header
 st.markdown(
     """
-    <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom: 0.5rem;">
-      <div style="
-          width:44px; height:44px; border-radius:14px;
-          background:linear-gradient(135deg,#4f46e5,#06b6d4);
-          display:flex; align-items:center; justify-content:center;
-          color:white; font-size:1.5rem; font-weight:700;
-      ">
-        AI
-      </div>
-      <div>
-        <div style="font-size:0.8rem; text-transform:uppercase; letter-spacing:0.14em; color:#6b7280; font-weight:600;">
-          Project Intelligence Studio
-        </div>
-        <div style="font-size:1.5rem; font-weight:800; color:#111827;">
-          Requirement Analyzer &amp; Impact Simulator
-        </div>
-      </div>
+<div style="display:flex; align-items:center; gap:1.25rem; margin-bottom: 1.0rem;">
+  <div style="
+      width:100px; height:100px; border-radius:25px;
+      background:linear-gradient(135deg,#4f46e5,#06b6d4);
+      display:flex; align-items:center; justify-content:center;
+      color:white; 
+      font-size:4.0rem !important;
+      font-weight:900;
+  ">
+    AI
+  </div>
+  <div>
+    <div style="font-size:1.0rem; text-transform:uppercase; letter-spacing:0.16em; color:#6b7280; font-weight:600;">
+      Project Intelligence Studio
     </div>
-    """,
+    <div style="font-size:3.5rem !important; font-weight:900; color:#111827;">
+      Requirement Analyzer &amp; Impact Simulator
+    </div>
+  </div>
+</div>
+""",
     unsafe_allow_html=True,
 )
 
@@ -217,7 +329,6 @@ if run_clicked:
     else:
         with st.spinner("Running multi-agent pipeline with Gemini 2.0 Flash..."):
             try:
-                # Only use previously approved requirements when auto-approval is ON
                 approved_requirements = (
                     st.session_state.get("approved_requirements")
                     if auto_approve
@@ -246,8 +357,8 @@ if result:
     baseline_weeks = float(summary.get("baseline_timeline_weeks") or deadline_weeks)
     simulation = result.get("simulation") or {}
     scenario_results = simulation.get("scenario_results") or []
+    extraction = result.get("extraction") or {}
 
-    # Tabs
     (
         tab_exec,
         tab_requirements,
@@ -282,27 +393,60 @@ if result:
                 "to generate risk analysis, complexity scoring, and simulations."
             )
 
-        # Metric cards
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Team size", f"{summary.get('team_size', team_size)}")
-        m2.metric("Target deadline (weeks)", f"{summary.get('deadline_weeks', deadline_weeks):.1f}")
-        m3.metric("Baseline timeline (weeks)", f"{summary.get('baseline_timeline_weeks', baseline_weeks):.1f}")
+        sev_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+        raid_log_global: List[Dict[str, Any]] = []
+        if not manual_mode:
+            raid_log_global = (result.get("risk_analysis") or {}).get("raid_log") or []
+            for entry in raid_log_global:
+                for risk in entry.get("risks") or []:
+                    sev = str(risk.get("severity", "")).lower()
+                    if sev in sev_counts:
+                        sev_counts[sev] += 1
 
         if manual_mode:
-            m4.metric("Complexity score (0-10)", "—", "Manual review pending")
+            status_display = "⏸️ Pending manual approval"
+            risk_exposure_val = None
+        else:
+            complexity_score = counts["complexity_score"]
+            risk_exposure_val = (
+                sev_counts["critical"] * 3
+                + sev_counts["high"] * 2
+                + sev_counts["medium"] * 1
+            )
+            risk_exposure_val = float(min(10, risk_exposure_val))
+
+            timeline_ok = baseline_weeks <= float(deadline_weeks)
+
+            if timeline_ok and complexity_score < 6 and risk_exposure_val < 4:
+                status_display = "🟢 On track"
+            elif not timeline_ok:
+                status_display = "🔴 Off track"
+            else:
+                status_display = "🟡 At risk"
+
+        st.markdown(f"### Overall project status: {status_display}")
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Team size", f"{summary.get('team_size', team_size)}")
+        m2.metric("Target deadline (weeks)", f"{summary.get('deadline_weeks', deadline_weeks):.1f}")
+        m3.metric("Estimated timeline (weeks)", f"{summary.get('baseline_timeline_weeks', baseline_weeks):.1f}")
+
+        if manual_mode:
+            m4.metric("Complexity score (0–10)", "—", "Manual review pending")
+            m5.metric("Risk exposure (0–10)", "—", "Run in auto mode")
         else:
             m4.metric(
                 "Complexity score (0-10)",
                 f"{counts['complexity_score']:.1f}",
                 counts["complexity_level"],
             )
+            m5.metric("Risk exposure (0–10)", f"{risk_exposure_val:.1f}")
 
         st.markdown("---")
 
-        # Layout: charts
         c_left, c_middle, c_right = st.columns((1.2, 1.0, 1.2))
 
-        # Requirements Overview (same in both modes)
+        # Requirements overview
         with c_left:
             st.markdown("#### Requirements Overview")
             st.markdown(
@@ -334,11 +478,9 @@ if result:
                 req_labels.append("Constraints")
                 req_values.append(counts["constraints"])
 
-            # Heading for the breakdown
             st.markdown("#### Requirements Breakdown")
 
             if req_values:
-                # Simple vertical legend rendered with Streamlit
                 legend_lines = []
                 if counts["functional"]:
                     legend_lines.append("🟦 Functional")
@@ -356,11 +498,10 @@ if result:
                         unsafe_allow_html=True,
                     )
 
-                # Pie chart without internal legend (just the slices + %)
                 fig_pie = px.pie(
                     values=req_values,
                     names=req_labels,
-                    title="",  # title handled by Streamlit heading above
+                    title="",
                 )
                 fig_pie.update_layout(
                     showlegend=False,
@@ -370,7 +511,7 @@ if result:
             else:
                 st.info("No requirements extracted yet (0 functional / 0 non-functional / 0 constraints).")
 
-        # Complexity Gauge
+        # Complexity gauge
         with c_middle:
             st.markdown("#### Complexity Gauge")
             if manual_mode:
@@ -381,7 +522,7 @@ if result:
                     go.Indicator(
                         mode="gauge+number",
                         value=comp_score,
-                        title={"text": "Complexity (0-10)", "font": {"size": 18}},
+                        title={"text": "Complexity (0-10)"},
                         gauge={
                             "axis": {"range": [0, 10]},
                             "steps": [
@@ -395,20 +536,12 @@ if result:
                 gauge_fig.update_layout(margin=dict(l=20, r=20, t=50, b=10))
                 st.plotly_chart(gauge_fig, use_container_width=True)
 
-        # Risk Overview
+        # Risk overview
         with c_right:
             st.markdown("#### Risk Overview")
             if manual_mode:
                 st.info("Risk analysis will be available after you approve requirements and re-run in auto mode.")
             else:
-                raid_log = (result.get("risk_analysis") or {}).get("raid_log") or []
-                sev_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
-                for entry in raid_log:
-                    for risk in entry.get("risks") or []:
-                        sev = str(risk.get("severity", "")).lower()
-                        if sev in sev_counts:
-                            sev_counts[sev] += 1
-
                 if any(sev_counts.values()):
                     fig_bar = px.bar(
                         x=list(sev_counts.keys()),
@@ -417,7 +550,6 @@ if result:
                         labels={"x": "Severity", "y": "Count"},
                     )
                     fig_bar.update_layout(
-                        title_font_size=18,
                         xaxis_title_font_size=12,
                         yaxis_title_font_size=12,
                         xaxis_tickfont_size=11,
@@ -429,7 +561,6 @@ if result:
 
         st.markdown("---")
 
-        # Timeline & validation
         if manual_mode:
             st.info(
                 "Timeline impact scenarios and validation metrics will appear after you turn on "
@@ -442,11 +573,10 @@ if result:
                 fig_timeline = px.bar(
                     x=tp["labels"],
                     y=tp["values"],
-                    title="Baseline vs Scenario Timelines (weeks)",
+                    title="Estimated vs Scenario Timelines (weeks)",
                     labels={"x": "Scenario", "y": "Estimated duration (weeks)"},
                 )
                 fig_timeline.update_layout(
-                    title_font_size=18,
                     xaxis_title_font_size=12,
                     yaxis_title_font_size=12,
                     xaxis_tickfont_size=11,
@@ -478,27 +608,69 @@ if result:
             st.markdown("#### Overall Recommendation (from Artifact Agent)")
             st.json(result.get("final_report") or {})
 
+            st.markdown("#### Download PM Pack")
+            pm_pack_sections: List[str] = []
+
+            pm_pack_sections.append("# PM Pack")
+            pm_pack_sections.append("## Normalized Project Brief")
+            pm_pack_sections.append(
+                "```json\n" + json.dumps(result.get("normalized_project_brief") or {}, indent=2) + "\n```"
+            )
+
+            pm_pack_sections.append("## Complexity & Timeline")
+            pm_pack_sections.append(
+                f"- Team size: {summary.get('team_size', team_size)}\n"
+                f"- Target deadline (weeks): {summary.get('deadline_weeks', deadline_weeks):.1f}\n"
+                f"- Estimated timeline (weeks): {summary.get('baseline_timeline_weeks', baseline_weeks):.1f}\n"
+                f"- Complexity score (0–10): {counts['complexity_score']:.1f}\n"
+                f"- Complexity level: {counts['complexity_level']}\n"
+            )
+
+            pm_pack_sections.append("## Top Risks (from RAID log)")
+            if raid_log_global:
+                for entry in raid_log_global:
+                    for risk in entry.get("risks") or []:
+                        pm_pack_sections.append(
+                            f"- **[{risk.get('severity','?').upper()}]** "
+                            f"{risk.get('id', 'RISK')} – {risk.get('title') or risk.get('description','')}"
+                        )
+            else:
+                pm_pack_sections.append("_No risks available in this run._")
+
+            pm_pack_sections.append("## Simulation Scenarios")
+            if scenario_results:
+                for s in scenario_results:
+                    pm_pack_sections.append(
+                        f"- **{s.get('scenario','Scenario')}** — "
+                        f"Timeline impact: {s.get('timeline_impact','0%')}, "
+                        f"Key note: {s.get('note') or s.get('description','')}"
+                    )
+            else:
+                pm_pack_sections.append("_No scenarios returned in this run._")
+
+            pm_pack_md = "\n\n".join(pm_pack_sections)
+
+            st.download_button(
+                "📥 Download PM Pack (Markdown)",
+                pm_pack_md,
+                file_name="pm_pack.md",
+                mime="text/markdown",
+            )
+
         st.markdown("#### Normalized Project Brief (for debugging)")
         st.json(result.get("normalized_project_brief") or {})
 
-    # ---------------- Extracted Requirements (now editable in manual mode) ----------------
+    # ---------------- Extracted Requirements ----------------
     with tab_requirements:
         st.subheader("3. Extracted Requirements & User Stories")
 
-        extraction = result.get("extraction") or {}
         requirements_list = extraction.get("requirements") or []
 
-        # Ensure it's a list of dicts for data_editor
         if not isinstance(requirements_list, list):
             requirements_list = []
         else:
-            tmp = []
-            for r in requirements_list:
-                if isinstance(r, dict):
-                    tmp.append(r)
-            requirements_list = tmp
+            requirements_list = [r for r in requirements_list if isinstance(r, dict)]
 
-        # Helper to generate next REQ id
         def generate_next_id(reqs: List[Dict[str, Any]]) -> str:
             numbers = []
             for r in reqs:
@@ -526,7 +698,6 @@ if result:
                 """
             )
 
-            # Editable table with dropdowns
             edited_requirements = st.data_editor(
                 requirements_list,
                 num_rows="dynamic",
@@ -560,10 +731,7 @@ if result:
                 if st.button("💾 Save edited requirements for next run", key="save_reqs"):
                     cleaned_reqs: List[Dict[str, Any]] = []
 
-                    # Start ID counter from existing requirements
                     next_id_value = generate_next_id(edited_requirements)
-
-                    # Extract numeric part once
                     try:
                         current_num = int(next_id_value.replace("REQ-", ""))
                     except ValueError:
@@ -574,7 +742,6 @@ if result:
                             continue
                         rc = dict(r)
 
-                        # Skip completely empty rows (no text and no id)
                         if not (rc.get("id") or rc.get("text")):
                             continue
 
@@ -610,18 +777,71 @@ if result:
             st.markdown("**Requirements & user stories (read-only)**")
             st.json(extraction or {})
 
-    # ---------------- Other tabs ----------------
+    # ---------------- Structured Backlog ----------------
     with tab_structured:
         st.subheader("4. Structured Backlog & RAID Log (Raw JSON)")
         st.json(result.get("structuring") or {})
 
+    # ---------------- Risk Analysis + Heat Map ----------------
     with tab_risk:
         st.subheader("5. Risk Analysis (RAID + Complexity)")
         if manual_mode:
             st.info("Risk analysis is not available in manual-approval mode. Re-run with auto-approval enabled.")
         else:
-            st.json(result.get("risk_analysis") or {})
+            risk_analysis = result.get("risk_analysis") or {}
+            raid_log = risk_analysis.get("raid_log") or []
 
+            if raid_log:
+                st.markdown("#### Risk Heat Map (Likelihood × Impact)")
+                lh_labels, im_labels, matrix, cell_to_risks = _build_risk_heatmap_matrix(raid_log)
+
+                if matrix is not None:
+                    fig_heat = px.imshow(
+                        matrix,
+                        x=im_labels,
+                        y=lh_labels,
+                        labels=dict(x="Impact", y="Likelihood", color="Risk count"),
+                        text_auto=True,
+                    )
+                    fig_heat.update_layout(
+                        xaxis_title="Impact",
+                        yaxis_title="Likelihood",
+                    )
+                    st.plotly_chart(fig_heat, use_container_width=True)
+
+                    # Simple "click" behaviour via dropdowns
+                    st.markdown("##### View risks for a specific cell")
+                    sel_lh = st.selectbox("Likelihood bucket", lh_labels, key="heatmap_likelihood")
+                    sel_im = st.selectbox("Impact bucket", im_labels, key="heatmap_impact")
+
+                    risks_here = cell_to_risks.get((sel_lh, sel_im), [])
+                    if risks_here:
+                        st.markdown(
+                            f"**Risks in cell:** Likelihood = `{sel_lh}`, Impact = `{sel_im}`"
+                        )
+                        for r in risks_here:
+                            rid = r.get("id", "RISK")
+                            title = r.get("title") or r.get("description", "")
+                            sev = r.get("severity", "unknown")
+                            st.markdown(f"- **{rid}** (_severity: {sev}_): {title}")
+                    else:
+                        st.info(
+                            "No risks were mapped to this combination. Try a different likelihood/impact cell."
+                        )
+
+                else:
+                    st.info(
+                        "Risk heat map could not be generated because no structured risk "
+                        "data was available in the RAID log."
+                    )
+            else:
+                st.info("No RAID log entries available to build a risk heat map.")
+
+            st.markdown("---")
+            with st.expander("RAID Analysis (Raw JSON)", expanded=False):
+                st.json(risk_analysis or {})
+
+    # ---------------- Mitigation Plans ----------------
     with tab_mitigation:
         st.subheader("6. Risk Mitigation Action Plans")
         if manual_mode:
@@ -652,13 +872,106 @@ if result:
                             for action in actions:
                                 st.markdown(f"- {action}")
 
+    # ---------------- Simulation ----------------
     with tab_simulation:
         st.subheader("7. Simulation Results")
         if manual_mode:
             st.info("Simulation results appear only after you run with auto-approval enabled.")
         else:
+            st.markdown("#### What-if: Team Size vs Timeline")
+            original_team_size = int(summary.get("team_size", team_size))
+            sim_team_size = st.slider(
+                "Simulate team size (developers)",
+                min_value=1,
+                max_value=50,
+                value=original_team_size,
+                key="sim_team_size_slider",
+            )
+
+            simulated_baseline_weeks = _recompute_timeline_for_team(
+                baseline_weeks=baseline_weeks,
+                original_team_size=original_team_size,
+                new_team_size=sim_team_size,
+            )
+
+            s1, s2 = st.columns(2)
+            s1.metric(
+                "Estimated timeline (weeks)",
+                f"{baseline_weeks:.1f}",
+                help="Original estimated timeline from the simulation agent for the given team size.",
+            )
+            s2.metric(
+                f"Simulated timeline (weeks) for team size {sim_team_size}",
+                f"{simulated_baseline_weeks:.1f}",
+            )
+
+            st.markdown("#### Estimated vs Scenario Timelines (Simulated Team Size)")
+            tp_sim = _timeline_points(
+                simulated_baseline_weeks,
+                scenario_results,
+                baseline_label="Simulated baseline",
+            )
+            if tp_sim["labels"]:
+                fig_sim_timeline = px.bar(
+                    x=tp_sim["labels"],
+                    y=tp_sim["values"],
+                    title="Estimated vs Scenario Timelines (weeks, simulated team size)",
+                    labels={"x": "Scenario", "y": "Estimated duration (weeks)"},
+                )
+                fig_sim_timeline.update_layout(
+                    xaxis_title_font_size=12,
+                    yaxis_title_font_size=12,
+                    xaxis_tickfont_size=11,
+                    yaxis_tickfont_size=11,
+                )
+                st.plotly_chart(fig_sim_timeline, use_container_width=True)
+            else:
+                st.info("No simulation scenarios available to visualize.")
+
+            st.markdown("#### Scope-cut suggestions to hit target")
+            if simulated_baseline_weeks <= float(deadline_weeks):
+                st.success(
+                    "With this team size, the simulated timeline is within the target deadline. "
+                    "Scope-cut is not strictly required."
+                )
+            else:
+                all_reqs = extraction.get("requirements") or []
+                low_med_reqs = [
+                    r
+                    for r in all_reqs
+                    if str(r.get("priority", "medium")).lower() in ("low", "medium")
+                ]
+
+                overshoot_weeks = simulated_baseline_weeks - float(deadline_weeks)
+
+                if not low_med_reqs:
+                    st.warning(
+                        "Timeline exceeds target, but there are no LOW/MED priority requirements to drop. "
+                        "You may need to revisit priorities or increase team size."
+                    )
+                else:
+                    approx_drop_count = int(round(overshoot_weeks))
+                    approx_drop_count = max(1, approx_drop_count)
+                    approx_drop_count = min(approx_drop_count, len(low_med_reqs))
+
+                    suggested_to_drop = low_med_reqs[:approx_drop_count]
+
+                    st.warning(
+                        f"To hit the **{deadline_weeks:.1f} week** target with team size **{sim_team_size}**, "
+                        f"you likely need to drop or defer **~{approx_drop_count}** lower-priority requirements."
+                    )
+
+                    for r in suggested_to_drop:
+                        rid = r.get("id", "REQ")
+                        rtext = r.get("text", "")
+                        rprio = r.get("priority", "medium")
+                        st.markdown(f"- **{rid}** (_priority: {rprio}_): {rtext}")
+
+            st.markdown("---")
+            st.markdown("#### Raw Simulation JSON")
             st.json(result.get("simulation") or {})
 
+    # ---------------- Validation Loop ----------------
     with tab_validation:
         st.subheader("8. Validation History")
         if manual_mode:
@@ -674,9 +987,47 @@ if result:
                     ):
                         st.json(item)
 
+    # ---------------- Final JSON & Downloads ----------------
     with tab_final_json:
         st.subheader("9. Final Impact & Recommendation Report (Full JSON)")
         if manual_mode:
             st.info("Final report is generated after risk & simulation in auto-approval mode.")
         else:
             st.json(result.get("final_report") or {})
+
+            st.markdown("---")
+            st.markdown("### Download per-agent JSON outputs")
+
+            st.download_button(
+                "Download ingestion_output.json",
+                json.dumps(result.get("ingestion") or {}, indent=2),
+                "ingestion_output.json",
+                mime="application/json",
+            )
+            st.download_button(
+                "Download requirements.json",
+                json.dumps(result.get("extraction") or {}, indent=2),
+                "requirements.json",
+                mime="application/json",
+            )
+            st.download_button(
+                "Download raid_log.json",
+                json.dumps(
+                    (result.get("risk_analysis") or {}).get("raid_log") or [],
+                    indent=2,
+                ),
+                "raid_log.json",
+                mime="application/json",
+            )
+            st.download_button(
+                "Download simulation.json",
+                json.dumps(result.get("simulation") or {}, indent=2),
+                "simulation.json",
+                mime="application/json",
+            )
+            st.download_button(
+                "Download final_report.json",
+                json.dumps(result.get("final_report") or {}, indent=2),
+                "final_report.json",
+                mime="application/json",
+            )

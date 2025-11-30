@@ -65,13 +65,13 @@ def _call_llm_with_instruction(
 
     if expect_json:
         response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[prompt],
-        config={
-            "response_mime_type": "application/json",
-            "temperature": 0.0,
-        },
-    )
+            model="gemini-2.0-flash",
+            contents=[prompt],
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 0.0,
+            },
+        )
         text = response.text or ""
         return _safe_json_loads(text)
 
@@ -214,29 +214,57 @@ def _infer_complexity(
 def _compute_baseline_timeline(
     deadline_weeks: float,
     complexity_block: Dict[str, Any],
+    team_size: int,
 ) -> float:
     """
-    Compute a baseline timeline in weeks from target deadline and
-    deterministic complexity score.
+    Compute an **estimated** timeline in weeks.
 
-    Heuristic:
-      - complexity < 4  → 0.9x target (a bit faster)
-      - 4–7            → 1.1x target (slightly longer)
-      - >= 7           → 1.3x target (significantly longer)
+    It now reacts to:
+      - Target deadline
+      - Complexity score (driven by requirements & RAID)
+      - Team size (more developers → shorter estimate, fewer → longer)
+
+    Heuristic (two factors multiplied):
+      1) Complexity factor:
+            score < 4   → 0.9x target (a bit faster)
+            4–7         → 1.1x target (slightly longer)
+            >= 7        → 1.3x target (significantly longer)
+      2) Team factor (relative to a reference team of 3 devs):
+            team_factor = 3 / team_size, clamped between 0.2 and 1.8
+
+         So roughly:
+            - team_size = 1  → ~1.8x longer
+            - team_size = 3  → 1.0x
+            - team_size = 5  → 0.6x
+            - team_size = 10 → 0.3x
+            - team_size = 15 → 0.2x
     """
     try:
         score = float(complexity_block.get("complexity_score") or 0.0)
     except (TypeError, ValueError):
         score = 0.0
 
+    # Complexity factor
     if score < 4:
-        factor = 0.9
+        complexity_factor = 0.9
     elif score < 7:
-        factor = 1.1
+        complexity_factor = 1.1
     else:
-        factor = 1.3
+        complexity_factor = 1.3
 
-    return round(float(deadline_weeks) * factor, 1)
+    # Team size factor (reference team size = 3)
+    ref_team = 3
+    safe_team_size = max(int(team_size), 1)
+    team_factor = ref_team / safe_team_size
+
+    # Clamp to avoid extreme values, but still allow 5 / 10 / 15 to differ
+    if team_factor < 0.2:
+        team_factor = 0.2
+    elif team_factor > 1.8:
+        team_factor = 1.8
+
+    estimated = float(deadline_weeks) * complexity_factor * team_factor
+    return round(estimated, 1)
 
 
 # -------------------------------------------------------------------
@@ -357,6 +385,7 @@ def run_full_pipeline(
         summary = {
             "team_size": team_size,
             "deadline_weeks": deadline_weeks,
+            # In manual mode we still just show the target as the initial estimate
             "baseline_timeline_weeks": deadline_weeks,
             "requirements": {
                 "total": len(requirements),
@@ -454,10 +483,11 @@ def run_full_pipeline(
     sim_complexity = complexity_block
     simulation_output["complexity"] = sim_complexity
 
-    # Compute baseline timeline ONLY from deadline + complexity
+    # Compute estimated timeline from deadline + complexity + team size
     baseline_timeline_weeks = _compute_baseline_timeline(
         deadline_weeks=deadline_weeks,
         complexity_block=sim_complexity,
+        team_size=team_size,
     )
     simulation_output["baseline_timeline_weeks"] = baseline_timeline_weeks
 

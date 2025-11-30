@@ -52,51 +52,130 @@ This transforms early-stage requirement analysis from **hours of manual work** i
 --- 
 
 ### 🎯 Key Features
+
+#### High-level flow
+
+1. User opens the Streamlit dashboard (web_app.py) in the browser.
+
+2. Streamlit sends the raw project description + any uploaded files to the orchestrator (main_agent.py).
+
+3. main_agent.py runs a sequential multi-agent pipeline in src/agents/
+with an iterative Simulation ↔ Validation loop.
+
+4. Each agent calls Gemini via the shared client (configured in config.py) and, where needed, uses custom tools in src/tools/.
+
+5. The final results (requirements, risks, simulations, artifacts) are rendered back into the Streamlit UI.
+
 ###  Multi-Agent Architecture
 
 The system orchestrates specialized agents working together to produce deep analysis:
 
-#### 1. Ingestion Agent — Normalizer
+### 1. Ingestion Agent — Normalizer
 
-#### Purpose: Convert all incoming formats into clean, unified markdown.
-#### Supports: Text, PDFs, DOCX, meeting notes, and images (whiteboard/screenshots).
-Functions:
+#### Role
+Normalize all incoming project inputs into a single clean markdown document.
 
-* Optical Character Recognition (OCR) extraction : extracting text from images or scanned documents.
+#### Inputs
 
-* PDF parsing : analyzing a PDF file to extract its text, metadata, layout, tables, images, or other structural elements.
+* Free-text project brief entered in Streamlit.
 
-* Format normalization : transforming data from different formats (text, PDFs, DOCX, logs, images, HTML, JSON, etc.) into a consistent, unified structure.
+* Uploaded files (PDF, DOCX, TXT, MD, JSON, etc.).
 
-* Semantic merging of multi-source inputs : combining data from multiple sources (e.g., text, PDFs, logs, emails, images, transcripts) by understanding their meaning, removing duplicates, aligning overlapping content, and producing a unified, coherent output. 
+* Simple metadata from UI (project name, team size, deadline, etc.).
 
-#### 2. Requirement Extractor Agent — Analyzer
+#### Tools used
 
-* Purpose: Identify, extract, and classify requirements.
-* Outputs:
+* tools/file_parsers.py
 
-   * Functional requirements
+* PDF → text
 
-   * Non-functional requirements
+* DOCX → text
 
-   * Constraints
+* TXT/MD/JSON → text
 
-   * Policy or compliance items
+#### Image handling (via Gemini Vision / image-to-text)
 
-Uses NLP, rule-based checks, and pattern detection to provide structured requirement lists.
+* PNG/JPG → extracted text (OCR) → normalized requirement snippets
 
-#### 3. Structuring Agent — Builder
+Optional light LLM normalization with Gemini (e.g. cleaning headers, removing boilerplate).
 
-* Purpose: Transform extracted requirements into actionable engineering artifacts.
-* Outputs:
+#### Gemini usage
 
-    * User stories
+* Prompted to “summarize and normalize multiple snippets into a consistent markdown project description”.
 
-    * Acceptance criteria
+#### Outputs
 
-    * “Given–When–Then” test scenarios
+* normalized_context_md – a single markdown block that becomes the canonical input for downstream agents.
 
-    * Story point suggestions
+* Basic extracted metadata (if any, e.g. dates, stakeholders).
+
+#### 2. Requirement Extractor Agent — (requirement_extractor_agent.py) 
+
+#### Role
+Extract and categorize requirements using NLP on the normalized project context.
+
+#### Inputs
+
+* normalized_context_md from Ingestion Agent.
+
+* Optional UI hints (e.g. domain, priority focus).
+
+#### Tools used
+
+* Core tool = Gemini LLM (no local custom tools here).
+
+#### Gemini usage
+
+* Prompted to:
+
+   * Extract all explicit and implicit requirements.
+
+   * Classify into Functional / Non-Functional / Constraints.
+
+   * Assign IDs, short titles and brief descriptions.
+
+   * Optionally infer priority (High/Medium/Low).
+
+Outputs
+
+* requirements_raw – list of requirement dicts, e.g.
+ 
+  {id, title, description, category, priority, source}.
+
+* Basic quality tags (e.g. vague / ambiguous / conflicting) if detected.
+
+These are shown in Streamlit under “Extracted Requirements”, where the user can edit, add or delete items before running the full simulation (if manual approval is enabled).
+
+#### 3. Structuring Agent — Builder (structuring_agent.py)
+
+#### Role
+Convert raw requirements into structured agile artifacts.
+
+#### Inputs
+
+requirements_raw (possibly edited by the user in Streamlit).
+
+#### Tools used
+* Gemini LLM.
+
+Gemini usage
+
+* Prompted to:
+
+    * Convert each requirement into a user story (As a … I want … so that …).
+
+    * Add acceptance criteria in Gherkin or checklist form.
+
+    * Optionally estimate story points or effort buckets.
+
+#### Outputs
+
+* structured_requirements – list of user stories with:
+
+  {id, user_story, acceptance_criteria[], story_points, category, priority}.
+
+These feed both the **risk analysis** and the **simulation**.
+
 
 #### Human Validation Step — Manual Approval (Optional)
 
@@ -114,80 +193,186 @@ If manual approval is disabled, the pipeline proceeds automatically.
 
 This improves trustworthiness when analyzing real client deliverables.
 
-#### 4. Risk Estimator Agent — With Tools
+#### 4. Risk Estimator Agent  (risk_estimator_agent.py)
 
-* Purpose: Calculate project risk and complexity using custom tools.
-* Capabilities:
+#### Role
+Generate a risk profile for the project and each requirement, and compute an overall complexity score.
 
-    * Complexity scoring (0–10 deterministic model)
+#### Inputs
 
-    * Probability × Impact matrix
+* structured_requirements
 
-    * RAID log generation
+* Context metadata (team size, deadline, dependencies, etc.).
+#### Tools used
+**1. tools/complexity_calculator.py** 
+* Heuristic aggregation of:
+  * Number of requirements.
+  * Distribution of functional vs non-functional vs constraints.
+  * Story points / effort.
+  * Dependencies & critical constraints.
 
-    * Neural risk pattern detection (e.g., offline mode, SSO, legacy systems)
+**2.  tools/risk_scorer.py**
+* For each requirement, derive:
+  * Probability (Low/Medium/High or 1–5).
+  * Impact (Low/Medium/High or 1–5).
+  * Risk score (e.g. probability * impact).
+* Maps to severity buckets for the bar chart.
+
+**3. Gemini LLM**
+* Used to describe risk drivers, risk categories (schedule, scope, technical, stakeholder, etc.) and mitigation suggestions.
+
+#### Outputs
+
+* project_complexity_score (0–10) for the gauge.
+
+* risk_items list for the risk bar chart and RAID log, each with:
+
+  {requirement_id, risk_title, description, probability, impact, score, severity, mitigation, owner}.
+
+* Summary: top 3–5 key risks and overall risk posture (e.g. “Moderate risk; main drivers: integration complexity, unclear NFRs”).
 
 #### 5. Iterative Validation Loop
 
-#### 5a. Simulation Agent — Predictor
+#### 5a. Simulation Agent (simulation_agent.py)
 
-5a. Simulation Agent — Predictor
+#### Role
+Predict timeline impact using **Monte Carlo-style scenario simulations**.
+#### Inputs
+* structured_requirements
 
-Runs Monte Carlo–style simulations across 
-* multiple what-if scenarios, such as: 
+* project_complexity_score
 
-    * Scope +20%
+* Team size, working days/week, productivity assumptions (from config or UI).
 
-    * Team reduction
+#### Tools used
 
-    * Dependency delays
+**1. tools/timeline_estimator.py**
+* Deterministic base estimation:
+  * Convert story points / effort into person-days.
+  * Adjust for team size, buffer, and complexity.
+  * Produce baseline duration.
 
-    * Best/realistic/worst case timelines
+**2.tools/monte_carlo_simulator.py**
+* Run multiple simulation runs (e.g. 500–1,000) with:
+  * Randomized productivity.
+  * Random delay factors (risks, rework).
+* Output distribution of completion dates and percentiles.
 
-    * Scope +20%
+**3. Gemini LLM**
+* Summarizes simulation results into human-readable insights.
 
-    * Team reduction
+#### Outputs
+* scenario_results:
+  * Best / Expected / Worst case durations and end dates.
+  * Percentiles (P10, P50, P90) and schedule-slip vs baseline.
+* Time series data for the timeline impact chart in Streamlit. 
 
-    * Dependency delays
 
-    * Best/realistic/worst case timelines
+#### 5b. Validation Agent (validation_agent.py)
 
-Runs thousands of iterations to generate probabilistic timeline forecasts.
+#### Role
+Act as a **critic** for the simulation and overall requirement quality, driving the iterative validation loop.
 
-#### 5b. Validation Agent — Critic
+#### Inputs
 
-* Purpose: Judge the quality, consistency, and feasibility of the generated outputs.
-* Checks include:
+* structured_requirements
+* risk_items
+* scenario_results
+* Current loop iteration counter.
 
-    * Requirement completeness
-    * Contradiction detection
-    * Simulation plausibility
-    * Output quality scoring
+#### Tools used
 
-* Quality Gate Logic
+* Gemini LLM – acts as the validator/critic.
+* Internal quality heuristics (e.g. minimum number of acceptance criteria, no empty descriptions).
 
-    * If (Quality Score ≥ 7.0) AND (Iterations < 3):
-      → Proceed to next step : Artifact Generation
-    * Else:
-      → Refine & Repeat Extraction/Structuring/Simulation
+#### Gemini usage
+* Compute:
+  * Overall Requirement Quality Score (0–10).
+  * Dimension scores: clarity, feasibility, testability, consistency.
+  * Natural-language feedback and refinement suggestions.
+#### Decision logic (loop condition)
+* If quality_score >= 7.0 AND iteration < 3:
+  * Validation passes → exit loop.
+* Else:
+  * Use Gemini’s feedback to:
+    * Refine requirements.
+    * Adjust risks or assumptions.
+  * Re-run Simulation Agent ⇒ new scenario_results.
+  * Repeat until quality threshold or max iterations reached.
+#### Outputs
 
-#### 6. Artifact Generator Agent — Finalizer
+* quality_score
+* validation_feedback
+* Potentially refined structured_requirements / assumptions used in next loop iteration.
 
-* Purpose: Produce polished deliverables for stakeholders.
-* Deliverables include:
+#### 6. Artifact Generator Agent (artifact_generator_agent.py)
 
-    * Executive Summary
-    * Structured Requirements
-    * RAID Log
-    * Risk Mitigation Plan
-    * Timeline Simulations
-    * Recommendations
-    * Dashboard-ready JSON & charts (Streamlit-powered)
+#### Role
+Produce **PM-ready deliverables** from all previous stages.
 
---- 
+#### Inputs
+
+* Final structured_requirements (after validation loop).
+* risk_items and mitigation actions.
+* scenario_results and timeline metrics.
+* quality_score and feedback summary.
+
+#### Tools used
+
+* Gemini LLM – for document generation and professional wording.
+
+* Optionally exports could later be wired to tools for PDF/Excel, but in repo it mainly formats for Streamlit.
+
+#### Outputs / Deliverables (shown in Streamlit)
+
+* **Executive Dashboard** data: KPIs, charts, recommendations.
+
+* **Requirements backlog** (user stories + acceptance criteria).
+
+* **RAID log** (Risks, Assumptions, Issues, Dependencies).
+
+* **Simulation summary**: scenario comparison, schedule-slip, recommendations.
+
+### Custom Tools Overview (src/tools/)
+
+| Tool file                  | Purpose                                                                                 | Used by                  |
+| -------------------------- | --------------------------------------------------------------------------------------- | ------------------------ |
+| `file_parsers.py`          | Parse PDFs, DOCX, TXT, MD, JSON into raw text                                           | Ingestion Agent          |
+| `complexity_calculator.py` | Compute 0–10 overall complexity from requirement volume, story points, constraints etc. | Risk Estimator Agent     |
+| `risk_scorer.py`           | Score probability × impact, severity buckets, structure risk items                      | Risk Estimator Agent     |
+| `monte_carlo_simulator.py` | Run stochastic simulations on timeline / productivity                                   | Simulation Agent         |
+| `timeline_estimator.py`    | Deterministic baseline duration estimation                                              | Simulation Agent         |
+| `main_agent.py`            | Orchestrator that wires all agents + tools together                                     | Called from `web_app.py` |
+
+#### Gemini API integration
+
+* Centralized in config.py and/or each agent file:
+
+   * Loads GEMINI_API_KEY from .env.
+   * Constructs a generativeai.Client (or similar).
+   * Shared across agents to reduce setup overhead.
+* Each agent defines prompt templates specific to its role
+
+  (extraction, structuring, risk analysis, simulation explanation, validation, artifact generation).
+
+##### 4. Deployment Architecture on GCP (Docker + Streamlit)
+**Runtime architecture**
+
+
+1. User opens the public HTTPS URL.
+2. Request hits Cloud Run (or another container runtime) that runs your Docker image.
+3. The container starts Streamlit (web_app.py) on internal port (e.g. 8501).
+4. Streamlit calls main_agent.run_full_pipeline() inside the container.
+5. Agents call Gemini API over the internet using the API key stored as a GCP secret / env var.
+6. Responses are rendered back to the user as the interactive dashboard.
+
+**Visually** :
+
+Browser → HTTPS → GCP Cloud Run (Docker container) → Streamlit app → main_agent → agents + tools → Gemini API
+
 # 🏗 Architecture
 
-![alt text](image-2.png)
+![alt text](image.png)
 
 
 

@@ -370,6 +370,8 @@ Produce **PM-ready deliverables** from all previous stages.
 
 Browser → HTTPS → GCP Cloud Run (Docker container) → Streamlit app → main_agent → agents + tools → Gemini API
 
+https://ai-project-requirement-analyzer-588957641146.europe-west3.run.app/ 
+
 # 🏗 Architecture
 
 ![alt text](image.png)
@@ -379,7 +381,7 @@ Browser → HTTPS → GCP Cloud Run (Docker container) → Streamlit app → mai
 
 
 --- 
-
+TO run locally the project follow below steps
 #### 1️⃣ Clone the Repository
     git clone https://github.com/<your-username>/AI-Project-Requirement-Analyzer-Impact-Simulator.git
     cd AI-Project-Requirement-Analyzer-Impact-Simulator

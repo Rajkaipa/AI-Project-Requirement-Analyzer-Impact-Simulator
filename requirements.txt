@@ -23,7 +23,7 @@ scipy
 matplotlib
 plotly
 streamlit
-pip install streamlit-plotly-events
+streamlit-plotly-events
 
 # --- Utilities ---
 mermaid-py

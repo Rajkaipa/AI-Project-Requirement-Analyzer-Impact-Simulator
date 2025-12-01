@@ -370,6 +370,8 @@ Produce **PM-ready deliverables** from all previous stages.
 
 Browser → HTTPS → GCP Cloud Run (Docker container) → Streamlit app → main_agent → agents + tools → Gemini API
 
+Below is the link where the agent was deployed through docker to GCP
+
 https://ai-project-requirement-analyzer-588957641146.europe-west3.run.app/ 
 
 # 🏗 Architecture
@@ -409,3 +411,37 @@ Browse https://aistudio.google.com/api-keys and generate API Key
 
 Access it at:
 👉 http://localhost:8501
+
+# Multi-Agent Sample Inputs and outputs ( demo )
+### Raw Project Requirement Input : Format png
+
+![Raw Project Requirement](Raw_inputs/Gemini_Generated_Image_7xnt7c7xnt7c7xnt.png)
+
+### Agent outputs :
+
+**Landing page** : Upload raw inputs (PDFs, docs, images, chat logs) and define project parameters before running the pipeline.
+![Landing Page](Sample_outputs/Landing_Page.png)
+
+**Executive Summary** : A high-level, PM-ready overview of project goals, complexity, risks, and simulated delivery timelines.
+![Executive Summary](Sample_outputs/Executive_Summary.png)
+
+**Structured Backlog** : A complete backlog of user stories with acceptance criteria and priority, generated from extracted requirements.
+![Structured Backlog](Sample_outputs/Structured_backlog.png)
+
+**Risk Analysis** : Detailed risk identification showing probability, impact, severity, and risk distribution across the project.
+![Risk Analysis](Sample_outputs/Risk_Analysis.png)
+
+**Risk Mitigation Plans** : Actionable mitigation strategies for high-severity risks, including owners, actions, and recommended timelines.
+![Risk Mitigation Plans](Sample_outputs/Risk_Mitigation_Plans.png)
+
+**Simulation** : Timeline simulations (best/expected/worst cases) generated using complexity, team size, and risk-adjusted factors.
+![Simulation](Sample_outputs/Simulation.png)
+
+**Validation** : Quality scoring and refinement feedback from the validation agent, ensuring clarity, feasibility, and consistency.
+![Validation](Sample_outputs/Validation.png)
+
+**Final Report for PM** : A consolidated, executive-friendly report summarizing requirements, risks, simulations, and key recommendations.
+![Final Report for PM](Sample_outputs/Final_report_for_PM.png)
+
+**Final Downloadable Report (JSON Format)** : Machine-readable JSON export containing the complete structured output from all agents.
+[Final Report (JSON Format)](Sample_outputs/final_report.json)

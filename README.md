@@ -366,13 +366,135 @@ Produce **PM-ready deliverables** from all previous stages.
 5. Agents call Gemini API over the internet using the API key stored as a GCP secret / env var.
 6. Responses are rendered back to the user as the interactive dashboard.
 
-**Visually** :
+### Prerequisites
+
+### Prerequisites
+
+- A Google Cloud project (repo used: `ai-project-req-analyzer`)
+- **Docker** installed locally
+- **gcloud** CLI installed and authenticated
+
+bash command :
+
+gcloud auth login
+gcloud config set project ai-project-req-analyzer
+--- 
+
+
+#### 1. Build the Docker image
+
+From the project root (where Dockerfile and web_app.py live):
+
+ `docker build -t req-analyzer:latest .`
+
+The Dockerfile starts from python:3.11-slim, installs requirements.txt, copies the app, and runs:
+
+` streamlit run web_app.py --server.port=8080 --server.address=0.0.0.0`
+
+#### 2. Test the container locally
+
+`docker run -p 8080:8080 req-analyzer:latest`
+
+Open: http://localhost:8080 and verify the app works, then stop the container.
+
+#### 3. Push image to Google Artifact Registry
+
+This project uses:
+
+* Region: europe-west3
+
+* Artifact Registry repo: req-analyzer-repo
+
+* Image name: req-analyzer
+
+If the repository does not exist yet, create it:
+
+`gcloud services enable artifactregistry.googleapis.com`
+
+`gcloud artifacts repositories create req-analyzer-repo \
+  --repository-format=docker \
+  --location=europe-west3 \
+  --description="Docker images for AI Project Requirement Analyzer`
+
+
+Authenticate Docker to Artifact Registry:
+
+`gcloud auth configure-docker europe-west3-docker.pkg.dev`
+
+Tag and push the image (example tag: v2):
+
+`docker tag req-analyzer:latest \
+  europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v2`
+
+`docker push europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v2`
+
+#### 4. Deploy to Cloud Run
+
+Enable Cloud Run:
+
+`gcloud services enable run.googleapis.com`
+
+🔐 Environment variables
+The app expects a Gemini / Google Generative AI API key in GOOGLE_API_KEY.
+
+Deploy a Cloud Run service named req-analyzer:
+
+`gcloud run deploy req-analyzer \
+  --image europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v2 \
+  --region europe-west3 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --memory 2Gi \
+  --cpu 2 \
+  --max-instances 5 \
+  --set-env-vars GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY_HERE`
+
+After deployment, gcloud prints a URL of the form:
+
+https://req-analyzer-xxxxxxxxxx-europe-west3.run.app
+
+This is the public endpoint for the Requirement Analyzer & Impact Simulator Streamlit app.
+
+**Visually the project works like below ** :
 
 Browser → HTTPS → GCP Cloud Run (Docker container) → Streamlit app → main_agent → agents + tools → Gemini API
 
 Below is the link where the agent was deployed through docker to GCP
 
 https://ai-project-requirement-analyzer-588957641146.europe-west3.run.app/ 
+
+(https service was diasbled to save money)
+
+#### 5. Updating the deployment
+
+To deploy a new version:
+
+#### 1. Rebuild the image:
+
+`docker build -t req-analyzer:latest .`
+
+2. Tag with a new version (e.g. v3) and push:
+
+`docker tag req-analyzer:latest \
+  europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v3`
+
+`docker push europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v3`
+
+3. Deploy the new tag:
+
+`gcloud run deploy req-analyzer \
+  --image europe-west3-docker.pkg.dev/ai-project-req-analyzer/req-analyzer-repo/req-analyzer:v3 \
+  --region europe-west3 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --memory 2Gi \
+  --cpu 2 \
+  --max-instances 5 \
+  --set-env-vars GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY_HERE`
+
+
 
 # 🏗 Architecture
 
@@ -383,7 +505,8 @@ https://ai-project-requirement-analyzer-588957641146.europe-west3.run.app/
 
 
 --- 
-TO run locally the project follow below steps
+## To run locally the project follow below steps
+
 #### 1️⃣ Clone the Repository
     git clone https://github.com/<your-username>/AI-Project-Requirement-Analyzer-Impact-Simulator.git
     cd AI-Project-Requirement-Analyzer-Impact-Simulator

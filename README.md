@@ -548,6 +548,9 @@ Access it at:
 **Executive Summary** : A high-level, PM-ready overview of project goals, complexity, risks, and simulated delivery timelines.
 ![Executive Summary](Sample_outputs/Executive_Summary.png)
 
+**Extracted Requirements** : Automatically generated list of all functional, non-functional, and constraint requirements extracted from the raw project inputs. 
+![Extracted Requirements](Sample_outputs/Extracted_Requirements.png)
+
 **Structured Backlog** : A complete backlog of user stories with acceptance criteria and priority, generated from extracted requirements.
 ![Structured Backlog](Sample_outputs/Structured_backlog.png)
 
@@ -555,7 +558,7 @@ Access it at:
 ![Risk Analysis](Sample_outputs/Risk_Analysis.png)
 
 **Risk Mitigation Plans** : Actionable mitigation strategies for high-severity risks, including owners, actions, and recommended timelines.
-![Risk Mitigation Plans](Sample_outputs/Risk_Mitigation_Plans.png)
+![Risk Mitigation Plans](Sample_outputs/Risk_Mitagation_Plans.png)
 
 **Simulation** : Timeline simulations (best/expected/worst cases) generated using complexity, team size, and risk-adjusted factors.
 ![Simulation](Sample_outputs/Simulation.png)
